@@ -33,9 +33,11 @@ import {
   perplexityDeepNotes,
   perplexityFindExecutives,
 } from '@/lib/api';
+import { enqueueJobs } from '@/lib/apiJobs';
 import { renderTemplate } from '@/lib/template';
 import ExportModal from '@/app/_components/ExportModal';
 import LongTextEditorModal from '@/app/_components/LongTextEditorModal';
+import JobStatusPill from '@/app/_components/JobStatusPill';
 
 // Mapping types + guessing live in src/lib/importMapping.ts
 
@@ -159,6 +161,7 @@ export default function Home() {
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [snippets, setSnippets] = useState<Record<string, string>>({});
+  const [bulkJobMode, setBulkJobMode] = useState<'all' | 'selected'>('all');
 
   const [exportOpen, setExportOpen] = useState(false);
   const [exportQ, setExportQ] = useState('');
@@ -177,9 +180,20 @@ export default function Home() {
 
   const saveTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
 
+  const [jobStatuses, setJobStatuses] = useState<
+    Record<string, { status: string; updatedAt: string } | null>
+  >({});
+
   async function refresh() {
     const recs = await fetchRecords();
     setRecords(recs);
+    try {
+      const res = await fetch(`/api/records/jobs?limit=${encodeURIComponent(String(recs.length || 2000))}`);
+      const json = await res.json();
+      if (res.ok) setJobStatuses(json.statuses ?? {});
+    } catch {
+      // ignore
+    }
   }
 
   async function refreshSnippets() {
@@ -286,7 +300,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900">
-      <div className="mx-auto w-full max-w-none px-6 py-10">
+      <div className="mx-auto w-full max-w-screen-2xl px-6 py-10">
         <header className="mb-6">
           <h1 className="text-2xl font-semibold">Exec Search GTM</h1>
           <p className="text-sm text-zinc-600">
@@ -426,6 +440,42 @@ export default function Home() {
             <h2 className="font-medium">3) CRM Table (editable)</h2>
             <div className="mt-1 text-xs text-zinc-600">Rows: {records.length}</div>
             <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={bulkJobMode}
+                onChange={(e) => setBulkJobMode(e.target.value as 'all' | 'selected')}
+                className="rounded border bg-white px-2 py-2 text-sm"
+              >
+                <option value="all">All rows (matching filters)</option>
+                <option value="selected">Selected rows</option>
+              </select>
+              <button
+                className="rounded border bg-white px-3 py-2 text-sm"
+                onClick={async () => {
+                  const ids = bulkJobMode === 'selected' ? Array.from(selected) : undefined;
+                  const res = await enqueueJobs({
+                    action: 'enrich_all',
+                    filter: ids ? { ids } : { missingResearchNotes: true },
+                  });
+                  alert(`Enqueued ${res.enqueued} jobs (skipped cached: ${res.skippedCached}).`);
+                  await refresh();
+                }}
+              >
+                Enrich (queue)
+              </button>
+              <button
+                className="rounded border bg-white px-3 py-2 text-sm"
+                onClick={async () => {
+                  const ids = bulkJobMode === 'selected' ? Array.from(selected) : undefined;
+                  const res = await enqueueJobs({
+                    action: 'verify_all',
+                    filter: ids ? { ids } : { missingExecSearchStatus: true },
+                  });
+                  alert(`Enqueued ${res.enqueued} jobs (skipped cached: ${res.skippedCached}).`);
+                  await refresh();
+                }}
+              >
+                Verify Exec Search? (queue)
+              </button>
               <button
                 className="rounded border bg-white px-3 py-2 text-sm"
                 onClick={() => setExportOpen(true)}
@@ -484,6 +534,7 @@ export default function Home() {
                       />
                     </th>
                     <th className="bg-white border-b px-2 py-2 text-left">#</th>
+                    <th className="bg-white border-b px-2 py-2 text-left whitespace-nowrap">AI</th>
                     {SHEET_COLUMNS.map((c) => (
                       <th key={c.key} className="border-b px-2 py-2 text-left whitespace-nowrap">
                         {c.label}
@@ -511,6 +562,9 @@ export default function Home() {
                         />
                       </td>
                       <td className="bg-inherit border-b px-2 py-2">{idx + 1}</td>
+                      <td className="bg-inherit border-b px-2 py-2 whitespace-nowrap">
+                        <JobStatusPill status={jobStatuses[r.id]?.status ?? null} />
+                      </td>
 
                       {SHEET_COLUMNS.map((c) => {
                         const val = String(r[c.key] ?? '');

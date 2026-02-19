@@ -96,6 +96,13 @@ function toRow(db: Record<string, unknown>): RecordRow {
     executiveLinkedIn: s(db.executive_linkedin),
     email: s(db.email),
     emailTemplate: s(db.email_template),
+
+    // legacy fields (kept for type compatibility; not persisted)
+    enriched: false,
+    verified: execSearchStatus !== 'unknown',
+    verificationScore: 0,
+    lastEnrichedAt: '',
+
     sourceFile: s(db.source_file),
     rawRowJson: s(db.raw_row_json),
     importBatchId: s(db.import_batch_id),

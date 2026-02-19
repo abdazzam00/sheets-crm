@@ -27,7 +27,7 @@ export default function RootLayout({
     <html lang="en">
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         <div className="border-b bg-white">
-          <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
+          <div className="mx-auto flex max-w-screen-2xl items-center justify-between px-6 py-3">
             <Link href="/" className="text-sm font-medium">
               Sheets CRM
             </Link>

@@ -88,6 +88,12 @@ export function makeEmptyRow(sourceFile: string, rawRow: unknown): RecordRow {
     executiveLinkedIn: '',
     email: '',
     emailTemplate: '',
+
+    enriched: false,
+    verified: false,
+    verificationScore: 0,
+    lastEnrichedAt: '',
+
     sourceFile,
     rawRowJson: JSON.stringify(rawRow ?? {}),
     importBatchId: '',

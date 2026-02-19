@@ -16,6 +16,12 @@ export type RecordRow = {
   email: string;
   emailTemplate: string;
 
+  // Enrichment/verification fields
+  enriched: boolean;
+  verified: boolean;
+  verificationScore: number; // 0-5
+  lastEnrichedAt: string;
+
   // System fields
   sourceFile: string;
   rawRowJson: string; // for debugging; not shown by default
