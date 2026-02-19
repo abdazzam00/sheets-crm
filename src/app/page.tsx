@@ -145,9 +145,31 @@ export default function Home() {
 
         <div className="grid gap-6 md:grid-cols-2">
           <section className="rounded-xl border bg-white p-4">
-            <h2 className="mb-2 font-medium">1) Paste CSV</h2>
+            <h2 className="mb-2 font-medium">1) Upload or paste CSV</h2>
+
             <div className="mb-3 grid grid-cols-1 gap-2">
-              <label className="text-xs text-zinc-600">Source file name (for tracking)</label>
+              <label className="text-xs text-zinc-600">Upload CSV file</label>
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                className="block w-full text-sm"
+                onChange={async (e) => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  setSourceFile(f.name);
+                  const text = await f.text();
+                  setCsvText(text);
+                  // auto-parse after upload
+                  const parsed = parseCSV(text);
+                  setHeaders(parsed.headers);
+                  setRows(parsed.rows);
+                  setMapping(guessMapping(parsed.headers));
+                }}
+              />
+            </div>
+
+            <div className="mb-3 grid grid-cols-1 gap-2">
+              <label className="text-xs text-zinc-600">Source file name (optional override)</label>
               <input
                 value={sourceFile}
                 onChange={(e) => setSourceFile(e.target.value)}
@@ -155,10 +177,12 @@ export default function Home() {
                 placeholder="apollo_export.csv"
               />
             </div>
+
+            <label className="text-xs text-zinc-600">Or paste CSV</label>
             <textarea
               value={csvText}
               onChange={(e) => setCsvText(e.target.value)}
-              className="h-64 w-full rounded-md border p-3 font-mono text-xs"
+              className="mt-2 h-64 w-full rounded-md border p-3 font-mono text-xs"
               placeholder="Paste CSV here (including header row)"
             />
             <div className="mt-3 flex gap-2">
@@ -166,7 +190,7 @@ export default function Home() {
                 onClick={onParse}
                 className="rounded-md bg-black px-3 py-2 text-sm text-white"
               >
-                Parse CSV
+                Parse Pasted CSV
               </button>
             </div>
             {headers.length > 0 && (
