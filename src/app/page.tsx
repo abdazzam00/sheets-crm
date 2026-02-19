@@ -424,6 +424,7 @@ export default function Home() {
         <section className="mt-6 rounded-xl border bg-white p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <h2 className="font-medium">3) CRM Table (editable)</h2>
+            <div className="mt-1 text-xs text-zinc-600">Rows: {records.length}</div>
             <div className="flex flex-wrap items-center gap-2">
               <button
                 className="rounded border bg-white px-3 py-2 text-sm"
