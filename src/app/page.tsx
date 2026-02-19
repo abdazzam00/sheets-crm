@@ -288,7 +288,7 @@ export default function Home() {
     <div className="min-h-screen bg-zinc-50 text-zinc-900">
       <div className="mx-auto w-full max-w-none px-6 py-10">
         <header className="mb-6">
-          <h1 className="text-2xl font-semibold">Sheets CRM</h1>
+          <h1 className="text-2xl font-semibold">Exec Search GTM</h1>
           <p className="text-sm text-zinc-600">
             Postgres-backed CRM table. Import CSVs (append + dedupe/merge) and edit inline (autosaves).
           </p>
