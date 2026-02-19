@@ -109,9 +109,17 @@ function buildRow(row: Record<string, string>, mapping: Mapping, sourceFile: str
     r.domain = normalizeDomain(extractDomainFromEmail(r.email));
   }
 
-  // Validate domain-ish
+  // If the mapped "domain" column contains non-domain text (common with messy CSVs),
+  // don't fail the import; just drop it and rely on email/AI to fill later.
   if (r.domain && !isValidDomainLike(r.domain)) {
-    throw new Error(`Invalid Domain/Website value: "${r.domain}"`);
+    const bad = r.domain;
+    r.domain = '';
+    r.perplexityResearchNotes = [
+      r.perplexityResearchNotes,
+      `Domain dropped (didn't look like a domain/url): ${bad}`,
+    ]
+      .filter(Boolean)
+      .join('\n');
   }
 
   // If we have domain but not company name, make a weak guess (user can edit later)
@@ -178,9 +186,20 @@ function CellEditor({ value, onChange, multiline, linkHref, onExpand, invalid }:
   );
 }
 
-function Modal({ open, title, value, onClose, onSave }: { open: boolean; title: string; value: string; onClose: () => void; onSave: (v: string) => void }) {
+function Modal({
+  open,
+  title,
+  value,
+  onClose,
+  onSave,
+}: {
+  open: boolean;
+  title: string;
+  value: string;
+  onClose: () => void;
+  onSave: (v: string) => void;
+}) {
   const [local, setLocal] = useState(value);
-  useEffect(() => setLocal(value), [value]);
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
@@ -234,7 +253,7 @@ export default function Home() {
   const canImport = headers.length > 0 && rows.length > 0;
   const headerOptions = useMemo(() => [''].concat(headers), [headers]);
 
-  const saveTimers = useRef(new Map<string, any>());
+  const saveTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
 
   async function refresh() {
     const recs = await fetchRecords();
@@ -311,7 +330,7 @@ export default function Home() {
       rs.map((r) => (r.id === id ? { ...r, [key]: value, updatedAt: new Date().toISOString() } : r))
     );
 
-    const patch: any = { [key]: value };
+    const patch: Partial<RecordRow> & Record<string, string> = { [key]: value };
     if (key === 'domain') patch.domain = normalizeDomain(value);
     if (key === 'executiveLinkedIn') patch.executiveLinkedIn = normalizeLinkedIn(value);
     scheduleSave(id, patch);

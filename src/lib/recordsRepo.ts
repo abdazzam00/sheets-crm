@@ -1,4 +1,3 @@
-import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import type { RecordRow } from '@/lib/schema';
 import { nowIso } from '@/lib/normalize';
@@ -34,7 +33,7 @@ export async function ensureSchema() {
   );
 }
 
-function toRow(db: any): RecordRow {
+function toRow(db: Record<string, unknown>): RecordRow {
   return {
     id: db.id,
     companyName: db.company_name ?? '',
