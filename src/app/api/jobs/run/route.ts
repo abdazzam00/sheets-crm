@@ -27,12 +27,16 @@ async function runVerifyJob(recordId: string) {
   });
 
   const contentType = res.headers.get('content-type') || '';
-  const json: unknown = contentType.includes('application/json') ? await res.json().catch(() => ({})) : {};
+  const isJson = contentType.includes('application/json');
+  const json: unknown = isJson ? await res.json().catch(() => ({})) : {};
   if (!res.ok) {
+    const fallbackText = isJson ? '' : await res.text().catch(() => '');
     const msg =
       (json && typeof json === 'object' && 'error' in json
         ? (json as { error?: unknown }).error
-        : undefined) ?? res.statusText;
+        : undefined) ??
+      (fallbackText ? fallbackText.slice(0, 200) : undefined) ??
+      res.statusText;
     const err = Object.assign(new Error(String(msg)), { status: res.status });
     throw err;
   }
@@ -50,12 +54,16 @@ async function runEnrichJob(recordId: string) {
   });
 
   const contentType = res.headers.get('content-type') || '';
-  const json: unknown = contentType.includes('application/json') ? await res.json().catch(() => ({})) : {};
+  const isJson = contentType.includes('application/json');
+  const json: unknown = isJson ? await res.json().catch(() => ({})) : {};
   if (!res.ok) {
+    const fallbackText = isJson ? '' : await res.text().catch(() => '');
     const msg =
       (json && typeof json === 'object' && 'error' in json
         ? (json as { error?: unknown }).error
-        : undefined) ?? res.statusText;
+        : undefined) ??
+      (fallbackText ? fallbackText.slice(0, 200) : undefined) ??
+      res.statusText;
     const err = Object.assign(new Error(String(msg)), { status: res.status });
     throw err;
   }
