@@ -37,6 +37,16 @@ export function normalizeDomain(input: string): string {
   return s;
 }
 
+export function normalizeCompanyName(name: string) {
+  const s = clean(name).toLowerCase();
+  if (!s) return '';
+  return s
+    .replace(/\b(inc|inc\.|llc|l\.l\.c\.|ltd|ltd\.|corp|corp\.|corporation|company|co\.|co)\b/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
 export function isValidDomainLike(input: string): boolean {
   const d = normalizeDomain(input);
   if (!d) return true; // empty is allowed
@@ -70,14 +80,17 @@ export function makeEmptyRow(sourceFile: string, rawRow: unknown): RecordRow {
     companyName: '',
     domain: '',
     execSearchCategory: '',
+    execSearchStatus: 'unknown',
     perplexityResearchNotes: '',
     firmNiche: '',
     executiveName: '',
     executiveRole: '',
     executiveLinkedIn: '',
     email: '',
+    emailTemplate: '',
     sourceFile,
     rawRowJson: JSON.stringify(rawRow ?? {}),
+    importBatchId: '',
     createdAt: ts,
     updatedAt: ts,
   };

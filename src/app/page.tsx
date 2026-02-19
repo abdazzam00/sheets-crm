@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { parseCSV } from '@/lib/csv';
 import { SHEET_COLUMNS, type RecordRow } from '@/lib/schema';
+import type { Mapping } from '@/lib/importMapping';
+import { guessMappingHeuristics, guessMappingAuto } from '@/lib/importMapping';
+import { sha256Hex } from '@/lib/hash';
 import {
   clean,
   extractDomainFromEmail,
@@ -12,72 +15,29 @@ import {
   normalizeDomain,
   isValidDomainLike,
 } from '@/lib/normalize';
-import { fetchRecords, importRecords, patchRecord } from '@/lib/api';
+import {
+  deleteRecords,
+  exportRecords,
+  fetchRecords,
+  importRecords,
+  patchRecord,
+  perplexityResearch,
+  undoLatestImport,
+  verifyExecSearch,
+  fetchSnippets,
+  aiImportMap,
+  inferDomain,
+  generateFirmNiche,
+  draftEmailTemplate,
+  perplexityCategorize,
+  perplexityDeepNotes,
+  perplexityFindExecutives,
+} from '@/lib/api';
+import { renderTemplate } from '@/lib/template';
+import ExportModal from '@/app/_components/ExportModal';
+import LongTextEditorModal from '@/app/_components/LongTextEditorModal';
 
-type Mapping = {
-  companyName?: string;
-  domain?: string;
-  execSearchCategory?: string;
-  perplexityResearchNotes?: string;
-  firmNiche?: string;
-  executiveFirstName?: string;
-  executiveLastName?: string;
-  executiveName?: string;
-  executiveRole?: string;
-  executiveLinkedIn?: string;
-  email?: string;
-};
-
-function guessMapping(headers: string[]): Mapping {
-  const h = headers.map((x) => x.toLowerCase());
-  const pick = (pred: (s: string) => boolean) => headers[h.findIndex(pred)] ?? '';
-  const pickExact = (name: string) => headers[h.findIndex((s) => s.trim() === name.toLowerCase())] ?? '';
-
-  return {
-    companyName:
-      pickExact('Company Name') ||
-      pick((s) => s.includes('company') && s.includes('name')) ||
-      pick((s) => s === 'company') ||
-      pick((s) => s === 'organization') ||
-      '',
-    domain:
-      pickExact('Website') ||
-      pickExact('Domain') ||
-      pick((s) => s.includes('domain')) ||
-      pick((s) => s.includes('website')) ||
-      pick((s) => s.includes('company website')) ||
-      '',
-    executiveFirstName: pickExact('First Name') || '',
-    executiveLastName: pickExact('Last Name') || '',
-    executiveName:
-      pickExact('Full Name') ||
-      pick((s) => (s.includes('full') && s.includes('name')) || s === 'name') ||
-      pick((s) => s.includes('contact') && s.includes('name')) ||
-      pick((s) => s.includes('person') && s.includes('name')) ||
-      '',
-    executiveRole:
-      pickExact('Title') ||
-      pick((s) => s.includes('title')) ||
-      pick((s) => s.includes('role')) ||
-      pick((s) => s.includes('position')) ||
-      '',
-    executiveLinkedIn:
-      pickExact('Person Linkedin Url') ||
-      pick((s) => s.includes('linkedin') && (s.includes('profile') || s.includes('url'))) ||
-      pick((s) => s === 'linkedin') ||
-      '',
-    email:
-      pickExact('Email') ||
-      pick((s) => s === 'email' || (s.includes('email') && !s.includes('status'))) ||
-      pick((s) => s.includes('work email')) ||
-      '',
-    firmNiche: pick((s) => s.includes('niche')) || pick((s) => s.includes('tags')) || '',
-    execSearchCategory:
-      pick((s) => s.includes('category')) || pick((s) => s.includes('segment')) || '',
-    perplexityResearchNotes:
-      pick((s) => s.includes('research')) || pick((s) => s.includes('notes')) || '',
-  };
-}
+// Mapping types + guessing live in src/lib/importMapping.ts
 
 function getVal(row: Record<string, string>, header?: string) {
   if (!header) return '';
@@ -91,7 +51,14 @@ function buildRow(row: Record<string, string>, mapping: Mapping, sourceFile: str
   const r = makeEmptyRow(sourceFile, row);
   r.companyName = clean(getVal(row, mapping.companyName));
   r.domain = normalizeDomain(getVal(row, mapping.domain));
+  // Treat the website/domain field as untrusted. If it doesn't look like a domain,
+  // attempt to derive from email instead of failing imports.
+  if (r.domain && !isValidDomainLike(r.domain)) {
+    r.domain = '';
+  }
   r.execSearchCategory = clean(getVal(row, mapping.execSearchCategory));
+  const st = clean(getVal(row, mapping.execSearchStatus)).toLowerCase();
+  r.execSearchStatus = st === 'yes' || st === 'no' || st === 'unknown' ? (st as 'yes' | 'no' | 'unknown') : 'unknown';
   r.perplexityResearchNotes = clean(getVal(row, mapping.perplexityResearchNotes));
   r.firmNiche = clean(getVal(row, mapping.firmNiche));
 
@@ -103,6 +70,7 @@ function buildRow(row: Record<string, string>, mapping: Mapping, sourceFile: str
   r.executiveRole = clean(getVal(row, mapping.executiveRole));
   r.executiveLinkedIn = normalizeLinkedIn(clean(getVal(row, mapping.executiveLinkedIn)));
   r.email = clean(getVal(row, mapping.email));
+  r.emailTemplate = clean(getVal(row, mapping.emailTemplate));
 
   // Derive domain from email if needed
   if (!r.domain && r.email) {
@@ -110,17 +78,7 @@ function buildRow(row: Record<string, string>, mapping: Mapping, sourceFile: str
   }
 
   // If the mapped "domain" column contains non-domain text (common with messy CSVs),
-  // don't fail the import; just drop it and rely on email/AI to fill later.
-  if (r.domain && !isValidDomainLike(r.domain)) {
-    const bad = r.domain;
-    r.domain = '';
-    r.perplexityResearchNotes = [
-      r.perplexityResearchNotes,
-      `Domain dropped (didn't look like a domain/url): ${bad}`,
-    ]
-      .filter(Boolean)
-      .join('\n');
-  }
+  // never fail the import — just drop and re-derive from email below.
 
   // If we have domain but not company name, make a weak guess (user can edit later)
   if (!r.companyName && r.domain) {
@@ -186,53 +144,7 @@ function CellEditor({ value, onChange, multiline, linkHref, onExpand, invalid }:
   );
 }
 
-function Modal({
-  open,
-  title,
-  value,
-  onClose,
-  onSave,
-}: {
-  open: boolean;
-  title: string;
-  value: string;
-  onClose: () => void;
-  onSave: (v: string) => void;
-}) {
-  const [local, setLocal] = useState(value);
-  if (!open) return null;
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
-      <div className="w-full max-w-2xl rounded-xl bg-white p-4 shadow">
-        <div className="mb-2 flex items-center justify-between">
-          <div className="font-medium text-sm">{title}</div>
-          <button className="rounded border px-2 py-1 text-xs" onClick={onClose}>
-            Close
-          </button>
-        </div>
-        <textarea
-          className="h-64 w-full rounded border p-2 text-xs font-mono"
-          value={local}
-          onChange={(e) => setLocal(e.target.value)}
-        />
-        <div className="mt-3 flex justify-end gap-2">
-          <button className="rounded border px-3 py-2 text-xs" onClick={onClose}>
-            Cancel
-          </button>
-          <button
-            className="rounded bg-black px-3 py-2 text-xs text-white"
-            onClick={() => {
-              onSave(local);
-              onClose();
-            }}
-          >
-            Save
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
+// Long text editing is handled by LongTextEditorModal.
 
 export default function Home() {
   const [sourceFile, setSourceFile] = useState('upload.csv');
@@ -244,6 +156,16 @@ export default function Home() {
   const [records, setRecords] = useState<RecordRow[]>([]);
   const [loadingDb, setLoadingDb] = useState(true);
   const [importing, setImporting] = useState(false);
+
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [snippets, setSnippets] = useState<Record<string, string>>({});
+
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportQ, setExportQ] = useState('');
+  const [exportHasEmail, setExportHasEmail] = useState(false);
+  const [exportExecSearchStatus, setExportExecSearchStatus] = useState<'any' | 'unknown' | 'yes' | 'no'>('any');
+  const [exportFormat, setExportFormat] = useState<'csv' | 'tsv'>('csv');
+  const [exportLimit, setExportLimit] = useState(5000);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [modalTitle, setModalTitle] = useState('');
@@ -260,10 +182,17 @@ export default function Home() {
     setRecords(recs);
   }
 
+  async function refreshSnippets() {
+    const res = await fetchSnippets();
+    const map: Record<string, string> = {};
+    for (const s of res.snippets) map[s.key] = s.value;
+    setSnippets(map);
+  }
+
   useEffect(() => {
     (async () => {
       try {
-        await refresh();
+        await Promise.all([refresh(), refreshSnippets()]);
       } finally {
         setLoadingDb(false);
       }
@@ -274,7 +203,7 @@ export default function Home() {
     const parsed = parseCSV(csvText);
     setHeaders(parsed.headers);
     setRows(parsed.rows);
-    setMapping(guessMapping(parsed.headers));
+    setMapping(guessMappingHeuristics(parsed.headers));
   }
 
   async function onImport() {
@@ -285,19 +214,23 @@ export default function Home() {
         companyName: r.companyName,
         domain: r.domain,
         execSearchCategory: r.execSearchCategory,
+        execSearchStatus: r.execSearchStatus,
         perplexityResearchNotes: r.perplexityResearchNotes,
         firmNiche: r.firmNiche,
         executiveName: r.executiveName,
         executiveRole: r.executiveRole,
         executiveLinkedIn: r.executiveLinkedIn,
         email: r.email,
+        emailTemplate: r.emailTemplate,
         sourceFile,
         rawRowJson: r.rawRowJson,
       }));
 
       const res = await importRecords(payload);
       await refresh();
-      alert(`Import complete. Created ${res.created}, updated ${res.updated}.`);
+      alert(
+        `Import complete. Created ${res.created}, updated ${res.updated}. Batch ${res.batchId}.`
+      );
     } catch (e) {
       console.error(e);
       alert(`Import failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -331,8 +264,15 @@ export default function Home() {
     );
 
     const patch: Partial<RecordRow> & Record<string, string> = { [key]: value };
+    // narrow string index signature to known keys
+
     if (key === 'domain') patch.domain = normalizeDomain(value);
     if (key === 'executiveLinkedIn') patch.executiveLinkedIn = normalizeLinkedIn(value);
+    if (key === 'execSearchStatus') {
+      const st = value.toLowerCase();
+      (patch as Partial<RecordRow>).execSearchStatus =
+        st === 'yes' || st === 'no' || st === 'unknown' ? (st as 'yes' | 'no' | 'unknown') : 'unknown';
+    }
     scheduleSave(id, patch);
   }
 
@@ -373,7 +313,25 @@ export default function Home() {
                   const parsed = parseCSV(text);
                   setHeaders(parsed.headers);
                   setRows(parsed.rows);
-                  setMapping(guessMapping(parsed.headers));
+                  // Heuristics immediately, then (best-effort) AI fallback with caching
+                  setMapping(guessMappingHeuristics(parsed.headers));
+
+                  // 1) Server-side AI mapping cached by file signature
+                  try {
+                    const sig = await sha256Hex(`${f.name}|${f.size}|${f.lastModified}|${parsed.headers.join('|')}`);
+                    const res = await aiImportMap({ headers: parsed.headers, fileSignature: sig.slice(0, 32) });
+                    setMapping((m) => ({ ...m, ...((res.mapping as unknown) as Mapping) }));
+                  } catch {
+                    // ignore
+                  }
+
+                  // 2) Client-side AI fallback (cached in localStorage by headers)
+                  try {
+                    const { mapping: auto } = await guessMappingAuto(parsed.headers);
+                    setMapping((m) => ({ ...m, ...auto }));
+                  } catch {
+                    // ignore
+                  }
                 }}
               />
             </div>
@@ -422,8 +380,10 @@ export default function Home() {
                   ['Title', 'executiveRole'],
                   ['Person Linkedin Url', 'executiveLinkedIn'],
                   ['Email', 'email'],
+                  ['Email Template', 'emailTemplate'],
                   ['Firm Niche', 'firmNiche'],
                   ['Exec Search Category', 'execSearchCategory'],
+                  ['Exec Search? (unknown/yes/no)', 'execSearchStatus'],
                   ['Perplexity Research Notes', 'perplexityResearchNotes'],
                 ] as const
               ).map(([label, key]) => (
@@ -462,7 +422,46 @@ export default function Home() {
         </div>
 
         <section className="mt-6 rounded-xl border bg-white p-4">
-          <h2 className="mb-3 font-medium">3) CRM Table (editable)</h2>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="font-medium">3) CRM Table (editable)</h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                className="rounded border bg-white px-3 py-2 text-sm"
+                onClick={() => setExportOpen(true)}
+              >
+                Export…
+              </button>
+              <button
+                className="rounded border bg-white px-3 py-2 text-sm"
+                onClick={async () => {
+                  const ok = prompt(
+                    'Type UNDO to delete all rows from the latest import batch.'
+                  );
+                  if (ok !== 'UNDO') return;
+                  const res = await undoLatestImport();
+                  await refresh();
+                  alert(`Undid latest import. Deleted ${res.deleted} rows.`);
+                }}
+              >
+                Undo latest import
+              </button>
+              <button
+                disabled={selected.size === 0}
+                className="rounded border bg-white px-3 py-2 text-sm disabled:opacity-40"
+                onClick={async () => {
+                  if (selected.size === 0) return;
+                  if (!confirm(`Delete ${selected.size} selected rows?`)) return;
+                  const ids = Array.from(selected);
+                  const res = await deleteRecords(ids);
+                  setSelected(new Set());
+                  await refresh();
+                  alert(`Deleted ${res.deleted} rows.`);
+                }}
+              >
+                Delete selected
+              </button>
+            </div>
+          </div>
 
           {loadingDb ? (
             <p className="text-sm text-zinc-600">Loading…</p>
@@ -473,22 +472,48 @@ export default function Home() {
               <table className="min-w-full border-separate border-spacing-0 text-xs">
                 <thead>
                   <tr>
-                    <th className="sticky left-0 bg-white border-b px-2 py-2 text-left">#</th>
+                    <th className="sticky left-0 bg-white border-b px-2 py-2 text-left">
+                      <input
+                        type="checkbox"
+                        checked={records.length > 0 && selected.size === records.length}
+                        onChange={(e) => {
+                          if (e.target.checked) setSelected(new Set(records.map((r) => r.id)));
+                          else setSelected(new Set());
+                        }}
+                      />
+                    </th>
+                    <th className="bg-white border-b px-2 py-2 text-left">#</th>
                     {SHEET_COLUMNS.map((c) => (
                       <th key={c.key} className="border-b px-2 py-2 text-left whitespace-nowrap">
                         {c.label}
                       </th>
                     ))}
+                    <th className="border-b px-2 py-2 text-left whitespace-nowrap">Actions</th>
+                    <th className="border-b px-2 py-2 text-left whitespace-nowrap">Preview</th>
                   </tr>
                 </thead>
                 <tbody>
                   {records.map((r, idx) => (
                     <tr key={r.id} className="odd:bg-zinc-50">
-                      <td className="sticky left-0 bg-inherit border-b px-2 py-2">{idx + 1}</td>
+                      <td className="sticky left-0 bg-inherit border-b px-2 py-2">
+                        <input
+                          type="checkbox"
+                          checked={selected.has(r.id)}
+                          onChange={(e) => {
+                            setSelected((prev) => {
+                              const n = new Set(prev);
+                              if (e.target.checked) n.add(r.id);
+                              else n.delete(r.id);
+                              return n;
+                            });
+                          }}
+                        />
+                      </td>
+                      <td className="bg-inherit border-b px-2 py-2">{idx + 1}</td>
 
                       {SHEET_COLUMNS.map((c) => {
                         const val = String(r[c.key] ?? '');
-                        const isLong = c.key === 'perplexityResearchNotes';
+                        const isLong = c.key === 'perplexityResearchNotes' || c.key === 'emailTemplate';
                         const isDomain = c.key === 'domain';
                         const isLinkedIn = c.key === 'executiveLinkedIn';
 
@@ -501,8 +526,21 @@ export default function Home() {
                         const invalid = isDomain && domainInvalidIds.has(r.id);
 
                         return (
-                          <td key={String(c.key)} className="border-b px-2 py-2 whitespace-nowrap min-w-[220px]">
-                            {linkHref ? (
+                          <td
+                            key={String(c.key)}
+                            className="border-b px-2 py-2 whitespace-nowrap min-w-[220px]"
+                          >
+                            {c.key === 'execSearchStatus' ? (
+                              <select
+                                value={val || 'unknown'}
+                                onChange={(e) => setCell(r.id, 'execSearchStatus', e.target.value)}
+                                className="w-full rounded border px-2 py-1 text-xs"
+                              >
+                                <option value="unknown">unknown</option>
+                                <option value="yes">yes</option>
+                                <option value="no">no</option>
+                              </select>
+                            ) : linkHref ? (
                               <CellEditor value={val} onChange={() => {}} linkHref={linkHref} invalid={invalid} />
                             ) : (
                               <CellEditor
@@ -525,6 +563,135 @@ export default function Home() {
                           </td>
                         );
                       })}
+
+                      <td className="border-b px-2 py-2 whitespace-nowrap">
+                        <div className="flex flex-col gap-1">
+                          <details className="group">
+                            <summary className="cursor-pointer select-none rounded border px-2 py-1 text-[10px]">
+                              AI actions
+                            </summary>
+                            <div className="mt-1 flex flex-col gap-1">
+                              <div className="text-[10px] text-zinc-600">OpenAI</div>
+                              <button
+                                className="rounded border px-2 py-1 text-[10px]"
+                                onClick={async () => {
+                                  try {
+                                    const res = await inferDomain(r.id);
+                                    setRecords((xs) => xs.map((x) => (x.id === r.id ? res.record : x)));
+                                    if (res.ai?.domain) alert(`Inferred domain → ${res.ai.domain}\n${res.ai.reason}`);
+                                  } catch (e) {
+                                    alert(e instanceof Error ? e.message : String(e));
+                                  }
+                                }}
+                              >
+                                Infer domain
+                              </button>
+                              <button
+                                className="rounded border px-2 py-1 text-[10px]"
+                                onClick={async () => {
+                                  try {
+                                    const res = await verifyExecSearch(r.id);
+                                    setRecords((xs) => xs.map((x) => (x.id === r.id ? res.record : x)));
+                                    alert(`Exec Search? → ${res.ai.status}\n${res.ai.reason}`);
+                                  } catch (e) {
+                                    alert(e instanceof Error ? e.message : String(e));
+                                  }
+                                }}
+                              >
+                                Verify Exec Search?
+                              </button>
+                              <button
+                                className="rounded border px-2 py-1 text-[10px]"
+                                onClick={async () => {
+                                  try {
+                                    const res = await generateFirmNiche(r.id);
+                                    setRecords((xs) => xs.map((x) => (x.id === r.id ? res.record : x)));
+                                  } catch (e) {
+                                    alert(e instanceof Error ? e.message : String(e));
+                                  }
+                                }}
+                              >
+                                Generate firm niche
+                              </button>
+                              <button
+                                className="rounded border px-2 py-1 text-[10px]"
+                                onClick={async () => {
+                                  try {
+                                    const res = await draftEmailTemplate(r.id);
+                                    setRecords((xs) => xs.map((x) => (x.id === r.id ? res.record : x)));
+                                  } catch (e) {
+                                    alert(e instanceof Error ? e.message : String(e));
+                                  }
+                                }}
+                              >
+                                Draft email template
+                              </button>
+
+                              <div className="mt-1 text-[10px] text-zinc-600">Perplexity</div>
+                              <button
+                                className="rounded border px-2 py-1 text-[10px]"
+                                onClick={async () => {
+                                  try {
+                                    const res = await perplexityCategorize(r.id);
+                                    alert(`Category: ${res.category}\n\n${res.text}`);
+                                  } catch (e) {
+                                    alert(e instanceof Error ? e.message : String(e));
+                                  }
+                                }}
+                              >
+                                Categorize firm
+                              </button>
+                              <button
+                                className="rounded border px-2 py-1 text-[10px]"
+                                onClick={async () => {
+                                  try {
+                                    const res = await perplexityDeepNotes(r.id);
+                                    setRecords((xs) => xs.map((x) => (x.id === r.id ? res.record : x)));
+                                  } catch (e) {
+                                    alert(e instanceof Error ? e.message : String(e));
+                                  }
+                                }}
+                              >
+                                Deep research notes
+                              </button>
+                              <button
+                                className="rounded border px-2 py-1 text-[10px]"
+                                onClick={async () => {
+                                  try {
+                                    const res = await perplexityFindExecutives(r.id);
+                                    alert(res.executives);
+                                  } catch (e) {
+                                    alert(e instanceof Error ? e.message : String(e));
+                                  }
+                                }}
+                              >
+                                Find key executives
+                              </button>
+
+                              <div className="mt-1 text-[10px] text-zinc-600">Legacy</div>
+                              <button
+                                className="rounded border px-2 py-1 text-[10px]"
+                                onClick={async () => {
+                                  try {
+                                    const res = await perplexityResearch(r.id);
+                                    setRecords((xs) => xs.map((x) => (x.id === r.id ? res.record : x)));
+                                  } catch (e) {
+                                    alert(e instanceof Error ? e.message : String(e));
+                                  }
+                                }}
+                              >
+                                Perplexity research (append)
+                              </button>
+                            </div>
+                          </details>
+                        </div>
+                      </td>
+
+                      <td className="border-b px-2 py-2 min-w-[360px]">
+                        <div className="rounded border bg-white p-2 text-[10px] whitespace-pre-wrap">
+                          {renderTemplate(r.emailTemplate || '', { row: r, snippets })}
+                        </div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -533,7 +700,7 @@ export default function Home() {
           )}
         </section>
 
-        <Modal
+        <LongTextEditorModal
           open={modalOpen}
           title={modalTitle}
           value={
@@ -545,6 +712,46 @@ export default function Home() {
           onSave={(v) => {
             if (!modalRecordId) return;
             setCell(modalRecordId, modalKey, v);
+          }}
+          placeholders={
+            modalKey === 'emailTemplate'
+              ? [
+                  { label: 'Company Name → {{companyName}}', token: '{{companyName}}' },
+                  { label: 'Domain → {{domain}}', token: '{{domain}}' },
+                  { label: 'Executive Name → {{executiveName}}', token: '{{executiveName}}' },
+                  { label: 'Executive Role → {{executiveRole}}', token: '{{executiveRole}}' },
+                  { label: 'Email → {{email}}', token: '{{email}}' },
+                  { label: 'Firm Niche → {{firmNiche}}', token: '{{firmNiche}}' },
+                  { label: 'Snippet key → {{snippet:KEY}}', token: '{{snippet:KEY}}' },
+                ]
+              : undefined
+          }
+        />
+
+        <ExportModal
+          open={exportOpen}
+          onClose={() => setExportOpen(false)}
+          q={exportQ}
+          setQ={setExportQ}
+          hasEmail={exportHasEmail}
+          setHasEmail={setExportHasEmail}
+          execSearchStatus={exportExecSearchStatus}
+          setExecSearchStatus={setExportExecSearchStatus}
+          format={exportFormat}
+          setFormat={setExportFormat}
+          limit={exportLimit}
+          setLimit={setExportLimit}
+          onExport={async () => {
+            const text = await exportRecords({
+              format: exportFormat,
+              filter: {
+                execSearchStatus: exportExecSearchStatus,
+                hasEmail: exportHasEmail,
+                q: exportQ,
+                limit: exportLimit,
+              },
+            });
+            return text;
           }}
         />
       </div>

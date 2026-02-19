@@ -6,12 +6,14 @@ const PatchSchema = z.object({
   companyName: z.string().optional(),
   domain: z.string().optional(),
   execSearchCategory: z.string().optional(),
+  execSearchStatus: z.enum(['unknown', 'yes', 'no']).optional(),
   perplexityResearchNotes: z.string().optional(),
   firmNiche: z.string().optional(),
   executiveName: z.string().optional(),
   executiveRole: z.string().optional(),
   executiveLinkedIn: z.string().optional(),
   email: z.string().optional(),
+  emailTemplate: z.string().optional(),
   sourceFile: z.string().optional(),
 });
 
