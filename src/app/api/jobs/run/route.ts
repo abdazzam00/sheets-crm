@@ -82,18 +82,10 @@ async function runEnrichJob(recordId: string) {
   // Perplexity-based research notes (optional)
   try {
     await callJson('/api/records/ai/perplexity-research');
-  } catch (e: unknown) {
-    const status = Number(
-      e && typeof e === 'object' && 'status' in e ? (e as { status?: unknown }).status : 0
-    );
-
-    // If Perplexity is unauthorized/misconfigured, do not fail the whole enrich job.
-    if (status === 401 || status === 403) {
-      return { ok: true, skipped: 'perplexity_research', reason: 'unauthorized' };
-    }
-
-    // Otherwise propagate (rate limiting, timeouts, etc. will be handled by worker)
-    throw e;
+  } catch {
+    // Any Perplexity error should NOT brick the enrich job.
+    // We'll rely on a separate Perplexity job type later if needed.
+    return { ok: true, skipped: 'perplexity_research' };
   }
 
   return { ok: true };
