@@ -286,7 +286,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900">
-      <div className="mx-auto max-w-6xl px-6 py-10">
+      <div className="mx-auto w-full max-w-none px-6 py-10">
         <header className="mb-6">
           <h1 className="text-2xl font-semibold">Sheets CRM</h1>
           <p className="text-sm text-zinc-600">
