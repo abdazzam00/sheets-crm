@@ -1,6 +1,5 @@
 {
   "crons": [
-    { "path": "/api/jobs/run?max=5", "schedule": "* * * * *" },
-    { "path": "/api/health", "schedule": "*/5 * * * *" }
+    { "path": "/api/health", "schedule": "0 0 * * *" }
   ]
 }
