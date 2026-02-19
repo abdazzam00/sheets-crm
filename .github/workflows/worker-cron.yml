@@ -1,0 +1,26 @@
+name: sheets-crm worker cron
+
+on:
+  schedule:
+    - cron: '*/1 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  run-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit worker endpoint
+        env:
+          WORKER_URL: ${{ secrets.WORKER_URL }}
+          WORKER_TOKEN: ${{ secrets.WORKER_TOKEN }}
+        run: |
+          if [ -z "$WORKER_URL" ]; then
+            echo "Missing WORKER_URL secret" >&2
+            exit 1
+          fi
+          url="$WORKER_URL"
+          if [ -n "$WORKER_TOKEN" ]; then
+            curl -fsS -H "Authorization: Bearer $WORKER_TOKEN" "$url"
+          else
+            curl -fsS "$url"
+          fi
