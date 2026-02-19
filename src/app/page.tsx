@@ -430,7 +430,7 @@ export default function Home() {
             </div>
 
             <p className="mt-3 text-xs text-zinc-600">
-              Dedup/merge keys: Email, Executive LinkedIn, or Domain+Executive Name.
+              Dedup/merge key: Firm Domain (strict).
             </p>
           </section>
         </div>

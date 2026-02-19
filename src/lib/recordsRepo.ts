@@ -66,6 +66,30 @@ export async function ensureSchema() {
     );
   `);
 
+  // Merge log (no data loss)
+  await pool.query(`
+    create table if not exists company_merge_log (
+      id uuid primary key,
+      domain text not null,
+      canonical_company_id uuid not null,
+      merged_company_ids jsonb not null,
+      before jsonb not null,
+      after jsonb not null,
+      dry_run boolean not null default false,
+      created_at timestamptz not null default now()
+    );
+  `);
+
+  // Soft delete flags
+  await pool.query(`alter table companies add column if not exists deleted_at timestamptz;`);
+  await pool.query(`alter table records add column if not exists deleted_at timestamptz;`);
+  await pool.query(`alter table records add column if not exists company_id uuid;`);
+
+  // Firm-level lookup performance
+  await pool.query(`create index if not exists companies_domain_idx on companies (lower(domain));`);
+  await pool.query(`create index if not exists records_company_id_idx on records (company_id);`);
+  await pool.query(`create index if not exists records_domain_lower_idx on records (lower(domain));`);
+
   await pool.query(`create index if not exists records_email_idx on records (lower(email));`);
   await pool.query(
     `create index if not exists records_exec_linkedin_idx on records (lower(executive_linkedin));`
@@ -115,7 +139,7 @@ export async function listRecords(limit = 2000): Promise<RecordRow[]> {
   const pool = getPool();
   await ensureSchema();
   const res = await pool.query(
-    `select * from records order by updated_at desc nulls last, created_at desc limit $1`,
+    `select * from records where deleted_at is null order by updated_at desc nulls last, created_at desc limit $1`,
     [limit]
   );
   return res.rows.map(toRow);
@@ -137,37 +161,19 @@ function pickFirstNonEmpty(...vals: Array<string | null | undefined>) {
 }
 
 export function computeDedupKey(r: Partial<RecordRow>) {
-  const email = norm(r.email || '').toLowerCase();
-  const li = norm(r.executiveLinkedIn || '').toLowerCase();
   const domain = norm(r.domain || '').toLowerCase();
-  const exec = norm(r.executiveName || '').toLowerCase();
-  if (email) return { kind: 'email' as const, key: email };
-  if (li) return { kind: 'linkedin' as const, key: li };
-  if (domain && exec) return { kind: 'domain_exec' as const, key: `${domain}::${exec}` };
+  if (domain) return { kind: 'domain' as const, key: domain };
   return { kind: 'none' as const, key: '' };
 }
 
 export async function findExistingFor(r: Partial<RecordRow>) {
   const pool = getPool();
-  const email = norm(r.email || '').toLowerCase();
-  if (email) {
-    const res = await pool.query(`select * from records where lower(email)= $1 limit 1`, [email]);
-    if (res.rows[0]) return toRow(res.rows[0]);
-  }
-  const li = norm(r.executiveLinkedIn || '').toLowerCase();
-  if (li) {
-    const res = await pool.query(
-      `select * from records where lower(executive_linkedin)= $1 limit 1`,
-      [li]
-    );
-    if (res.rows[0]) return toRow(res.rows[0]);
-  }
+  // Firm-level dedupe: strict by normalized domain.
   const domain = norm(r.domain || '').toLowerCase();
-  const exec = norm(r.executiveName || '').toLowerCase();
-  if (domain && exec) {
+  if (domain) {
     const res = await pool.query(
-      `select * from records where lower(domain)= $1 and lower(executive_name)= $2 limit 1`,
-      [domain, exec]
+      `select * from records where deleted_at is null and lower(domain)= $1 order by updated_at desc nulls last limit 1`,
+      [domain]
     );
     if (res.rows[0]) return toRow(res.rows[0]);
   }

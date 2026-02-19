@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { upsertMerged } from '@/lib/recordsRepo';
 import { getPool } from '@/lib/db';
+import { cleanupImportedRow } from '@/lib/importCleanup';
+import { normalizeDomain } from '@/lib/normalize';
 
 const ImportSchema = z.object({
   rows: z.array(
@@ -41,7 +43,27 @@ export async function POST(req: Request) {
 
     const results = [];
     for (const row of body.rows) {
-      const r = await upsertMerged({ ...row, importBatchId: batchId });
+      const { cleaned } = cleanupImportedRow({
+        companyName: row.companyName,
+        domain: row.domain,
+        executiveName: row.executiveName,
+        executiveRole: row.executiveRole,
+        executiveLinkedIn: row.executiveLinkedIn,
+        email: row.email,
+        perplexityResearchNotes: row.perplexityResearchNotes,
+        firmNiche: row.firmNiche,
+        execSearchCategory: row.execSearchCategory,
+        execSearchStatus: row.execSearchStatus,
+        emailTemplate: row.emailTemplate,
+      });
+
+      cleaned.domain = normalizeDomain(cleaned.domain ?? '');
+
+      const r = await upsertMerged({
+        ...row,
+        ...cleaned,
+        importBatchId: batchId,
+      });
       if (r.created) created++;
       else updated++;
       dedupCounts[r.dedupKind] = (dedupCounts[r.dedupKind] ?? 0) + 1;

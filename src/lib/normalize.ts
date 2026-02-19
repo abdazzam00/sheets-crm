@@ -17,6 +17,23 @@ export function extractDomainFromEmail(email: string): string {
   return dom;
 }
 
+export function inferDomainFromWebsiteOrEmail(opts: {
+  website?: string;
+  email?: string;
+  domain?: string;
+}): string {
+  const direct = normalizeDomain(opts.domain ?? '');
+  if (direct) return direct;
+
+  const fromWebsite = normalizeDomain(opts.website ?? '');
+  if (fromWebsite) return fromWebsite;
+
+  const em = clean(opts.email ?? '');
+  if (em) return normalizeDomain(extractDomainFromEmail(em));
+
+  return '';
+}
+
 export function normalizeLinkedIn(url: string): string {
   let u = clean(url);
   if (!u) return '';
