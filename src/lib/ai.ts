@@ -75,11 +75,31 @@ export async function perplexitySearch(opts: {
     }),
   });
 
-  const json = await res.json();
+  const contentType = res.headers.get('content-type') || '';
+  const isJson = contentType.includes('application/json');
+  const json: unknown = isJson ? await res.json().catch(() => ({})) : null;
+
   if (!res.ok) {
-    throw new Error(`Perplexity error: ${json?.error?.message ?? res.statusText}`);
+    const fallbackText = isJson ? '' : await res.text().catch(() => '');
+
+    let msg: unknown = undefined;
+    if (isJson && json && typeof json === 'object') {
+      const j = json as { error?: { message?: unknown } };
+      msg = j.error?.message;
+    }
+
+    msg = msg ?? (fallbackText ? fallbackText.slice(0, 300) : undefined) ?? res.statusText;
+
+    const err = Object.assign(new Error(`Perplexity error: ${String(msg)}`), { status: res.status });
+    throw err;
   }
 
-  const text = json?.choices?.[0]?.message?.content ?? '';
+  let text = '';
+  if (json && typeof json === 'object') {
+    const j = json as { choices?: Array<{ message?: { content?: unknown } }> };
+    const c = j.choices?.[0]?.message?.content;
+    if (typeof c === 'string') text = c;
+  }
+
   return { text, raw: json };
 }
