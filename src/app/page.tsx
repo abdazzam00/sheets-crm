@@ -568,7 +568,7 @@ export default function Home() {
                         <div className="flex flex-col gap-1">
                           <details className="group">
                             <summary className="cursor-pointer select-none rounded border px-2 py-1 text-[10px]">
-                              AI actions
+                              Enrich
                             </summary>
                             <div className="mt-1 flex flex-col gap-1">
                               <div className="text-[10px] text-zinc-600">OpenAI</div>
