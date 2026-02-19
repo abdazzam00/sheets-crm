@@ -1,6 +1,8 @@
 export default function JobStatusPill({ status }: { status?: string | null }) {
-  const s = (status ?? '').toLowerCase();
-  if (!s) return null;
+  const s0 = (status ?? '').toLowerCase();
+  if (!s0) return null;
+
+  const label = s0 === 'succeeded' ? 'done' : s0 === 'rate_limited' ? 'retrying' : s0;
 
   const base = 'inline-flex items-center rounded-full px-2 py-0.5 text-[10px] border';
   const styles: Record<string, string> = {
@@ -12,5 +14,5 @@ export default function JobStatusPill({ status }: { status?: string | null }) {
     cancelled: 'bg-zinc-50 text-zinc-500 border-zinc-200',
   };
 
-  return <span className={`${base} ${styles[s] ?? styles.queued}`}>{s}</span>;
+  return <span className={`${base} ${styles[s0] ?? styles.queued}`}>{label}</span>;
 }
