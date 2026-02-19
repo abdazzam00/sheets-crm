@@ -34,21 +34,22 @@ export async function ensureSchema() {
 }
 
 function toRow(db: Record<string, unknown>): RecordRow {
+  const s = (v: unknown) => (v === null || v === undefined ? '' : String(v));
   return {
-    id: db.id,
-    companyName: db.company_name ?? '',
-    domain: db.domain ?? '',
-    execSearchCategory: db.exec_search_category ?? '',
-    perplexityResearchNotes: db.perplexity_research_notes ?? '',
-    firmNiche: db.firm_niche ?? '',
-    executiveName: db.executive_name ?? '',
-    executiveRole: db.executive_role ?? '',
-    executiveLinkedIn: db.executive_linkedin ?? '',
-    email: db.email ?? '',
-    sourceFile: db.source_file ?? '',
-    rawRowJson: db.raw_row_json ?? '',
-    createdAt: db.created_at ? new Date(db.created_at).toISOString() : nowIso(),
-    updatedAt: db.updated_at ? new Date(db.updated_at).toISOString() : nowIso(),
+    id: s(db.id),
+    companyName: s(db.company_name),
+    domain: s(db.domain),
+    execSearchCategory: s(db.exec_search_category),
+    perplexityResearchNotes: s(db.perplexity_research_notes),
+    firmNiche: s(db.firm_niche),
+    executiveName: s(db.executive_name),
+    executiveRole: s(db.executive_role),
+    executiveLinkedIn: s(db.executive_linkedin),
+    email: s(db.email),
+    sourceFile: s(db.source_file),
+    rawRowJson: s(db.raw_row_json),
+    createdAt: db.created_at ? new Date(s(db.created_at)).toISOString() : nowIso(),
+    updatedAt: db.updated_at ? new Date(s(db.updated_at)).toISOString() : nowIso(),
   };
 }
 
@@ -141,7 +142,7 @@ export async function upsertMerged(incoming: Partial<RecordRow>): Promise<{ reco
   await ensureSchema();
   const existing = await findExistingFor(incoming);
   if (!existing) {
-    const id = randomUUID();
+    const id = crypto.randomUUID();
     const res = await pool.query(
       `insert into records (
         id, company_name, domain, exec_search_category, perplexity_research_notes, firm_niche,
