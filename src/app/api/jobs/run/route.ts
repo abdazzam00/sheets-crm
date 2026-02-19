@@ -44,30 +44,59 @@ async function runVerifyJob(recordId: string) {
 }
 
 async function runEnrichJob(recordId: string) {
-  // Existing enrich endpoints are per-feature; for queue we call the research endpoint (notes) as the durable piece.
+  // Enrich pipeline (OpenAI-first). Perplexity steps are optional and should not brick the queue if auth is missing.
   const baseUrl = process.env.BASE_URL;
   if (!baseUrl) throw new Error('Missing BASE_URL env var (server-only)');
-  const res = await fetch(`${baseUrl}/api/records/ai/perplexity-research`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ id: recordId }),
-  });
 
-  const contentType = res.headers.get('content-type') || '';
-  const isJson = contentType.includes('application/json');
-  const json: unknown = isJson ? await res.json().catch(() => ({})) : {};
-  if (!res.ok) {
-    const fallbackText = isJson ? '' : await res.text().catch(() => '');
-    const msg =
-      (json && typeof json === 'object' && 'error' in json
-        ? (json as { error?: unknown }).error
-        : undefined) ??
-      (fallbackText ? fallbackText.slice(0, 200) : undefined) ??
-      res.statusText;
-    const err = Object.assign(new Error(String(msg)), { status: res.status });
-    throw err;
+  const callJson = async (path: string) => {
+    const res = await fetch(`${baseUrl}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: recordId }),
+    });
+
+    const contentType = res.headers.get('content-type') || '';
+    const isJson = contentType.includes('application/json');
+    const json: unknown = isJson ? await res.json().catch(() => ({})) : {};
+
+    if (!res.ok) {
+      const fallbackText = isJson ? '' : await res.text().catch(() => '');
+      const msg =
+        (json && typeof json === 'object' && 'error' in json
+          ? (json as { error?: unknown }).error
+          : undefined) ??
+        (fallbackText ? fallbackText.slice(0, 300) : undefined) ??
+        res.statusText;
+      const err = Object.assign(new Error(String(msg)), { status: res.status });
+      throw err;
+    }
+
+    return json;
+  };
+
+  // Always run OpenAI-based steps first
+  await callJson('/api/records/ai/infer-domain');
+  await callJson('/api/records/ai/generate-firm-niche');
+  await callJson('/api/records/ai/draft-email-template');
+
+  // Perplexity-based research notes (optional)
+  try {
+    await callJson('/api/records/ai/perplexity-research');
+  } catch (e: unknown) {
+    const status = Number(
+      e && typeof e === 'object' && 'status' in e ? (e as { status?: unknown }).status : 0
+    );
+
+    // If Perplexity is unauthorized/misconfigured, do not fail the whole enrich job.
+    if (status === 401 || status === 403) {
+      return { ok: true, skipped: 'perplexity_research', reason: 'unauthorized' };
+    }
+
+    // Otherwise propagate (rate limiting, timeouts, etc. will be handled by worker)
+    throw e;
   }
-  return json;
+
+  return { ok: true };
 }
 
 export async function GET(req: Request) {
@@ -129,6 +158,18 @@ export async function GET(req: Request) {
         if (status === 429) {
           await pool.query(
             `update ai_jobs set status='rate_limited', run_after=now() + interval '60 seconds', last_error=$2, updated_at=now() where id=$1`,
+            [job.id, msg]
+          );
+          processed.push({
+            id: job.id,
+            recordId: String(job.record_id),
+            jobType: String(job.job_type),
+            status: 'rate_limited' as JobStatus,
+          });
+        } else if (status === 401 || status === 403) {
+          // Auth errors (typically misconfigured provider key) — back off longer so we don't churn.
+          await pool.query(
+            `update ai_jobs set status='rate_limited', run_after=now() + interval '6 hours', last_error=$2, updated_at=now() where id=$1`,
             [job.id, msg]
           );
           processed.push({
