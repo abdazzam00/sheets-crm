@@ -1,4 +1,3 @@
-import { randomUUID } from 'crypto';
 import type { RecordRow } from './schema';
 
 export function nowIso() {
@@ -39,7 +38,7 @@ export function guessCompanyFromDomain(domain: string): string {
 export function makeEmptyRow(sourceFile: string, rawRow: unknown): RecordRow {
   const ts = nowIso();
   return {
-    id: randomUUID(),
+    id: (globalThis.crypto as Crypto).randomUUID(),
     companyName: '',
     domain: '',
     execSearchCategory: '',
