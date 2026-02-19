@@ -25,7 +25,9 @@ async function runVerifyJob(recordId: string) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ id: recordId }),
   });
-  const json: unknown = await res.json().catch(() => ({}));
+
+  const contentType = res.headers.get('content-type') || '';
+  const json: unknown = contentType.includes('application/json') ? await res.json().catch(() => ({})) : {};
   if (!res.ok) {
     const msg =
       (json && typeof json === 'object' && 'error' in json
@@ -46,7 +48,9 @@ async function runEnrichJob(recordId: string) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ id: recordId }),
   });
-  const json: unknown = await res.json().catch(() => ({}));
+
+  const contentType = res.headers.get('content-type') || '';
+  const json: unknown = contentType.includes('application/json') ? await res.json().catch(() => ({})) : {};
   if (!res.ok) {
     const msg =
       (json && typeof json === 'object' && 'error' in json
