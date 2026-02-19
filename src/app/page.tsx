@@ -65,21 +65,25 @@ function guessMapping(headers: string[]): Mapping {
   };
 }
 
+function getVal(row: Record<string, string>, header?: string) {
+  if (!header) return '';
+  const direct = row[header];
+  if (direct !== undefined) return direct;
+  const key = Object.keys(row).find((k) => k.trim().toLowerCase() === header.trim().toLowerCase());
+  return key ? row[key] : '';
+}
+
 function buildRow(row: Record<string, string>, mapping: Mapping, sourceFile: string): RecordRow {
   const r = makeEmptyRow(sourceFile, row);
-  r.companyName = clean(mapping.companyName ? row[mapping.companyName] : '');
-  r.domain = clean(mapping.domain ? row[mapping.domain] : '');
-  r.execSearchCategory = clean(mapping.execSearchCategory ? row[mapping.execSearchCategory] : '');
-  r.perplexityResearchNotes = clean(
-    mapping.perplexityResearchNotes ? row[mapping.perplexityResearchNotes] : ''
-  );
-  r.firmNiche = clean(mapping.firmNiche ? row[mapping.firmNiche] : '');
-  r.executiveName = clean(mapping.executiveName ? row[mapping.executiveName] : '');
-  r.executiveRole = clean(mapping.executiveRole ? row[mapping.executiveRole] : '');
-  r.executiveLinkedIn = normalizeLinkedIn(
-    clean(mapping.executiveLinkedIn ? row[mapping.executiveLinkedIn] : '')
-  );
-  r.email = clean(mapping.email ? row[mapping.email] : '');
+  r.companyName = clean(getVal(row, mapping.companyName));
+  r.domain = clean(getVal(row, mapping.domain));
+  r.execSearchCategory = clean(getVal(row, mapping.execSearchCategory));
+  r.perplexityResearchNotes = clean(getVal(row, mapping.perplexityResearchNotes));
+  r.firmNiche = clean(getVal(row, mapping.firmNiche));
+  r.executiveName = clean(getVal(row, mapping.executiveName));
+  r.executiveRole = clean(getVal(row, mapping.executiveRole));
+  r.executiveLinkedIn = normalizeLinkedIn(clean(getVal(row, mapping.executiveLinkedIn)));
+  r.email = clean(getVal(row, mapping.email));
 
   // Derive domain from email if needed
   if (!r.domain && r.email) {
@@ -115,8 +119,13 @@ export default function Home() {
   }
 
   function onImport() {
-    const next = rows.map((r) => buildRow(r, mapping, sourceFile));
-    setRecords(next);
+    try {
+      const next = rows.map((r) => buildRow(r, mapping, sourceFile));
+      setRecords(next);
+    } catch (e) {
+      console.error(e);
+      alert(`Import failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   function onExport() {
