@@ -1,7 +1,7 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import { parseCSV, toCSV } from '@/lib/csv';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { parseCSV } from '@/lib/csv';
 import { SHEET_COLUMNS, type RecordRow } from '@/lib/schema';
 import {
   clean,
@@ -9,8 +9,10 @@ import {
   guessCompanyFromDomain,
   makeEmptyRow,
   normalizeLinkedIn,
-  nowIso,
+  normalizeDomain,
+  isValidDomainLike,
 } from '@/lib/normalize';
+import { fetchRecords, importRecords, patchRecord } from '@/lib/api';
 
 type Mapping = {
   companyName?: string;
@@ -18,6 +20,8 @@ type Mapping = {
   execSearchCategory?: string;
   perplexityResearchNotes?: string;
   firmNiche?: string;
+  executiveFirstName?: string;
+  executiveLastName?: string;
   executiveName?: string;
   executiveRole?: string;
   executiveLinkedIn?: string;
@@ -27,33 +31,43 @@ type Mapping = {
 function guessMapping(headers: string[]): Mapping {
   const h = headers.map((x) => x.toLowerCase());
   const pick = (pred: (s: string) => boolean) => headers[h.findIndex(pred)] ?? '';
+  const pickExact = (name: string) => headers[h.findIndex((s) => s.trim() === name.toLowerCase())] ?? '';
 
   return {
     companyName:
+      pickExact('Company Name') ||
       pick((s) => s.includes('company') && s.includes('name')) ||
       pick((s) => s === 'company') ||
       pick((s) => s === 'organization') ||
       '',
     domain:
+      pickExact('Website') ||
+      pickExact('Domain') ||
       pick((s) => s.includes('domain')) ||
       pick((s) => s.includes('website')) ||
       pick((s) => s.includes('company website')) ||
       '',
+    executiveFirstName: pickExact('First Name') || '',
+    executiveLastName: pickExact('Last Name') || '',
     executiveName:
+      pickExact('Full Name') ||
       pick((s) => (s.includes('full') && s.includes('name')) || s === 'name') ||
       pick((s) => s.includes('contact') && s.includes('name')) ||
       pick((s) => s.includes('person') && s.includes('name')) ||
       '',
     executiveRole:
+      pickExact('Title') ||
       pick((s) => s.includes('title')) ||
       pick((s) => s.includes('role')) ||
       pick((s) => s.includes('position')) ||
       '',
     executiveLinkedIn:
+      pickExact('Person Linkedin Url') ||
       pick((s) => s.includes('linkedin') && (s.includes('profile') || s.includes('url'))) ||
       pick((s) => s === 'linkedin') ||
       '',
     email:
+      pickExact('Email') ||
       pick((s) => s === 'email' || (s.includes('email') && !s.includes('status'))) ||
       pick((s) => s.includes('work email')) ||
       '',
@@ -76,18 +90,28 @@ function getVal(row: Record<string, string>, header?: string) {
 function buildRow(row: Record<string, string>, mapping: Mapping, sourceFile: string): RecordRow {
   const r = makeEmptyRow(sourceFile, row);
   r.companyName = clean(getVal(row, mapping.companyName));
-  r.domain = clean(getVal(row, mapping.domain));
+  r.domain = normalizeDomain(getVal(row, mapping.domain));
   r.execSearchCategory = clean(getVal(row, mapping.execSearchCategory));
   r.perplexityResearchNotes = clean(getVal(row, mapping.perplexityResearchNotes));
   r.firmNiche = clean(getVal(row, mapping.firmNiche));
-  r.executiveName = clean(getVal(row, mapping.executiveName));
+
+  const first = clean(getVal(row, mapping.executiveFirstName));
+  const last = clean(getVal(row, mapping.executiveLastName));
+  const full = clean(getVal(row, mapping.executiveName));
+  r.executiveName = clean([first, last].filter(Boolean).join(' ')) || full;
+
   r.executiveRole = clean(getVal(row, mapping.executiveRole));
   r.executiveLinkedIn = normalizeLinkedIn(clean(getVal(row, mapping.executiveLinkedIn)));
   r.email = clean(getVal(row, mapping.email));
 
   // Derive domain from email if needed
   if (!r.domain && r.email) {
-    r.domain = extractDomainFromEmail(r.email);
+    r.domain = normalizeDomain(extractDomainFromEmail(r.email));
+  }
+
+  // Validate domain-ish
+  if (r.domain && !isValidDomainLike(r.domain)) {
+    throw new Error(`Invalid Domain/Website value: "${r.domain}"`);
   }
 
   // If we have domain but not company name, make a weak guess (user can edit later)
@@ -95,8 +119,100 @@ function buildRow(row: Record<string, string>, mapping: Mapping, sourceFile: str
     r.companyName = guessCompanyFromDomain(r.domain);
   }
 
-  r.updatedAt = nowIso();
   return r;
+}
+
+function asHrefDomain(domain: string) {
+  const d = normalizeDomain(domain);
+  if (!d) return '';
+  return `https://${d}`;
+}
+
+function classNames(...xs: Array<string | false | null | undefined>) {
+  return xs.filter(Boolean).join(' ');
+}
+
+type EditorProps = {
+  value: string;
+  onChange: (next: string) => void;
+  multiline?: boolean;
+  linkHref?: string;
+  onExpand?: () => void;
+  invalid?: boolean;
+};
+
+function CellEditor({ value, onChange, multiline, linkHref, onExpand, invalid }: EditorProps) {
+  if (linkHref) {
+    return (
+      <a
+        href={linkHref}
+        target="_blank"
+        rel="noreferrer"
+        className={classNames('underline', invalid && 'text-red-600')}
+      >
+        {value}
+      </a>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={classNames(
+          'w-full rounded border px-2 py-1 text-xs',
+          invalid && 'border-red-500 bg-red-50'
+        )}
+      />
+      {multiline && onExpand && (
+        <button
+          type="button"
+          onClick={onExpand}
+          className="rounded border px-2 py-1 text-[10px]"
+        >
+          Expand
+        </button>
+      )}
+    </div>
+  );
+}
+
+function Modal({ open, title, value, onClose, onSave }: { open: boolean; title: string; value: string; onClose: () => void; onSave: (v: string) => void }) {
+  const [local, setLocal] = useState(value);
+  useEffect(() => setLocal(value), [value]);
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
+      <div className="w-full max-w-2xl rounded-xl bg-white p-4 shadow">
+        <div className="mb-2 flex items-center justify-between">
+          <div className="font-medium text-sm">{title}</div>
+          <button className="rounded border px-2 py-1 text-xs" onClick={onClose}>
+            Close
+          </button>
+        </div>
+        <textarea
+          className="h-64 w-full rounded border p-2 text-xs font-mono"
+          value={local}
+          onChange={(e) => setLocal(e.target.value)}
+        />
+        <div className="mt-3 flex justify-end gap-2">
+          <button className="rounded border px-3 py-2 text-xs" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className="rounded bg-black px-3 py-2 text-xs text-white"
+            onClick={() => {
+              onSave(local);
+              onClose();
+            }}
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function Home() {
@@ -105,11 +221,35 @@ export default function Home() {
   const [headers, setHeaders] = useState<string[]>([]);
   const [rows, setRows] = useState<Record<string, string>[]>([]);
   const [mapping, setMapping] = useState<Mapping>({});
+
   const [records, setRecords] = useState<RecordRow[]>([]);
+  const [loadingDb, setLoadingDb] = useState(true);
+  const [importing, setImporting] = useState(false);
+
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalTitle, setModalTitle] = useState('');
+  const [modalRecordId, setModalRecordId] = useState<string | null>(null);
+  const [modalKey, setModalKey] = useState<keyof RecordRow>('perplexityResearchNotes');
 
   const canImport = headers.length > 0 && rows.length > 0;
-
   const headerOptions = useMemo(() => [''].concat(headers), [headers]);
+
+  const saveTimers = useRef(new Map<string, any>());
+
+  async function refresh() {
+    const recs = await fetchRecords();
+    setRecords(recs);
+  }
+
+  useEffect(() => {
+    (async () => {
+      try {
+        await refresh();
+      } finally {
+        setLoadingDb(false);
+      }
+    })();
+  }, []);
 
   function onParse() {
     const parsed = parseCSV(csvText);
@@ -118,29 +258,72 @@ export default function Home() {
     setMapping(guessMapping(parsed.headers));
   }
 
-  function onImport() {
+  async function onImport() {
     try {
-      const next = rows.map((r) => buildRow(r, mapping, sourceFile));
-      setRecords(next);
+      setImporting(true);
+      const built = rows.map((r) => buildRow(r, mapping, sourceFile));
+      const payload = built.map((r) => ({
+        companyName: r.companyName,
+        domain: r.domain,
+        execSearchCategory: r.execSearchCategory,
+        perplexityResearchNotes: r.perplexityResearchNotes,
+        firmNiche: r.firmNiche,
+        executiveName: r.executiveName,
+        executiveRole: r.executiveRole,
+        executiveLinkedIn: r.executiveLinkedIn,
+        email: r.email,
+        sourceFile,
+        rawRowJson: r.rawRowJson,
+      }));
+
+      const res = await importRecords(payload);
+      await refresh();
+      alert(`Import complete. Created ${res.created}, updated ${res.updated}.`);
     } catch (e) {
       console.error(e);
       alert(`Import failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setImporting(false);
     }
   }
 
-  function onExport() {
-    const outHeaders = SHEET_COLUMNS.map((c) => c.label);
-    const outRows = records.map((r) => {
-      const o: Record<string, string> = {};
-      for (const col of SHEET_COLUMNS) {
-        o[col.label] = String(r[col.key] ?? '');
+  function scheduleSave(id: string, patch: Partial<RecordRow>) {
+    const prev = saveTimers.current.get(id);
+    if (prev) clearTimeout(prev);
+    const t = setTimeout(async () => {
+      try {
+        // domain validation
+        if (patch.domain !== undefined && patch.domain && !isValidDomainLike(patch.domain)) {
+          throw new Error('Domain must look like a domain or URL');
+        }
+        const updated = await patchRecord(id, patch);
+        setRecords((rs) => rs.map((r) => (r.id === id ? updated : r)));
+      } catch (e) {
+        console.error(e);
+        alert(e instanceof Error ? e.message : String(e));
       }
-      return o;
-    });
-    const out = toCSV(outHeaders, outRows);
-    navigator.clipboard.writeText(out);
-    alert('Export CSV copied to clipboard (paste into Google Sheets).');
+    }, 450);
+    saveTimers.current.set(id, t);
   }
+
+  function setCell(id: string, key: keyof RecordRow, value: string) {
+    setRecords((rs) =>
+      rs.map((r) => (r.id === id ? { ...r, [key]: value, updatedAt: new Date().toISOString() } : r))
+    );
+
+    const patch: any = { [key]: value };
+    if (key === 'domain') patch.domain = normalizeDomain(value);
+    if (key === 'executiveLinkedIn') patch.executiveLinkedIn = normalizeLinkedIn(value);
+    scheduleSave(id, patch);
+  }
+
+  const domainInvalidIds = useMemo(() => {
+    const bad = new Set<string>();
+    for (const r of records) {
+      if (r.domain && !isValidDomainLike(r.domain)) bad.add(r.id);
+    }
+    return bad;
+  }, [records]);
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900">
@@ -148,7 +331,7 @@ export default function Home() {
         <header className="mb-6">
           <h1 className="text-2xl font-semibold">Sheets CRM</h1>
           <p className="text-sm text-zinc-600">
-            Upload/paste any CSV → auto-map columns → normalize into a clean, Google-Sheets-friendly table.
+            Postgres-backed CRM table. Import CSVs (append + dedupe/merge) and edit inline (autosaves).
           </p>
         </header>
 
@@ -168,7 +351,6 @@ export default function Home() {
                   setSourceFile(f.name);
                   const text = await f.text();
                   setCsvText(text);
-                  // auto-parse after upload
                   const parsed = parseCSV(text);
                   setHeaders(parsed.headers);
                   setRows(parsed.rows);
@@ -195,10 +377,7 @@ export default function Home() {
               placeholder="Paste CSV here (including header row)"
             />
             <div className="mt-3 flex gap-2">
-              <button
-                onClick={onParse}
-                className="rounded-md bg-black px-3 py-2 text-sm text-white"
-              >
+              <button onClick={onParse} className="rounded-md bg-black px-3 py-2 text-sm text-white">
                 Parse Pasted CSV
               </button>
             </div>
@@ -211,22 +390,22 @@ export default function Home() {
 
           <section className="rounded-xl border bg-white p-4">
             <h2 className="mb-2 font-medium">2) Map columns</h2>
-            <p className="mb-3 text-xs text-zinc-600">
-              Auto-guessed mapping — adjust if needed.
-            </p>
+            <p className="mb-3 text-xs text-zinc-600">Auto-guessed mapping — adjust if needed.</p>
 
             <div className="grid grid-cols-1 gap-3 text-sm">
               {(
                 [
                   ['Company Name', 'companyName'],
-                  ['Domain', 'domain'],
+                  ['Website/Domain', 'domain'],
+                  ['Executive First Name', 'executiveFirstName'],
+                  ['Executive Last Name', 'executiveLastName'],
+                  ['Executive Name (fallback)', 'executiveName'],
+                  ['Title', 'executiveRole'],
+                  ['Person Linkedin Url', 'executiveLinkedIn'],
+                  ['Email', 'email'],
+                  ['Firm Niche', 'firmNiche'],
                   ['Exec Search Category', 'execSearchCategory'],
                   ['Perplexity Research Notes', 'perplexityResearchNotes'],
-                  ['Firm Niche', 'firmNiche'],
-                  ['Executive Name', 'executiveName'],
-                  ['Executive Role', 'executiveRole'],
-                  ['Executive LinkedIn', 'executiveLinkedIn'],
-                  ['Email', 'email'],
                 ] as const
               ).map(([label, key]) => (
                 <div key={key} className="grid grid-cols-2 items-center gap-3">
@@ -250,31 +429,26 @@ export default function Home() {
             <div className="mt-4 flex gap-2">
               <button
                 onClick={onImport}
-                disabled={!canImport}
+                disabled={!canImport || importing}
                 className="rounded-md bg-black px-3 py-2 text-sm text-white disabled:opacity-40"
               >
-                Import → Build CRM Table
-              </button>
-              <button
-                onClick={onExport}
-                disabled={records.length === 0}
-                className="rounded-md border px-3 py-2 text-sm disabled:opacity-40"
-              >
-                Export CSV (copy)
+                {importing ? 'Importing…' : 'Import → Append + Merge into DB'}
               </button>
             </div>
 
             <p className="mt-3 text-xs text-zinc-600">
-              Import rules: derives Domain from Email when missing; guesses Company Name from Domain when missing.
-              Dedup/merge + database storage coming next.
+              Dedup/merge keys: Email, Executive LinkedIn, or Domain+Executive Name.
             </p>
           </section>
         </div>
 
         <section className="mt-6 rounded-xl border bg-white p-4">
-          <h2 className="mb-3 font-medium">3) CRM Table Preview</h2>
-          {records.length === 0 ? (
-            <p className="text-sm text-zinc-600">No records yet.</p>
+          <h2 className="mb-3 font-medium">3) CRM Table (editable)</h2>
+
+          {loadingDb ? (
+            <p className="text-sm text-zinc-600">Loading…</p>
+          ) : records.length === 0 ? (
+            <p className="text-sm text-zinc-600">No records yet. Import a CSV to get started.</p>
           ) : (
             <div className="overflow-auto">
               <table className="min-w-full border-separate border-spacing-0 text-xs">
@@ -289,14 +463,49 @@ export default function Home() {
                   </tr>
                 </thead>
                 <tbody>
-                  {records.slice(0, 200).map((r, idx) => (
+                  {records.map((r, idx) => (
                     <tr key={r.id} className="odd:bg-zinc-50">
                       <td className="sticky left-0 bg-inherit border-b px-2 py-2">{idx + 1}</td>
-                      {SHEET_COLUMNS.map((c) => (
-                        <td key={String(c.key)} className="border-b px-2 py-2 whitespace-nowrap">
-                          {String(r[c.key] ?? '')}
-                        </td>
-                      ))}
+
+                      {SHEET_COLUMNS.map((c) => {
+                        const val = String(r[c.key] ?? '');
+                        const isLong = c.key === 'perplexityResearchNotes';
+                        const isDomain = c.key === 'domain';
+                        const isLinkedIn = c.key === 'executiveLinkedIn';
+
+                        const linkHref = isDomain
+                          ? asHrefDomain(val)
+                          : isLinkedIn
+                            ? normalizeLinkedIn(val)
+                            : '';
+
+                        const invalid = isDomain && domainInvalidIds.has(r.id);
+
+                        return (
+                          <td key={String(c.key)} className="border-b px-2 py-2 whitespace-nowrap min-w-[220px]">
+                            {linkHref ? (
+                              <CellEditor value={val} onChange={() => {}} linkHref={linkHref} invalid={invalid} />
+                            ) : (
+                              <CellEditor
+                                value={val}
+                                onChange={(next) => setCell(r.id, c.key, next)}
+                                multiline={isLong}
+                                invalid={invalid}
+                                onExpand={
+                                  isLong
+                                    ? () => {
+                                        setModalRecordId(r.id);
+                                        setModalKey(c.key);
+                                        setModalTitle(c.label);
+                                        setModalOpen(true);
+                                      }
+                                    : undefined
+                                }
+                              />
+                            )}
+                          </td>
+                        );
+                      })}
                     </tr>
                   ))}
                 </tbody>
@@ -304,6 +513,21 @@ export default function Home() {
             </div>
           )}
         </section>
+
+        <Modal
+          open={modalOpen}
+          title={modalTitle}
+          value={
+            modalRecordId
+              ? String(records.find((r) => r.id === modalRecordId)?.[modalKey] ?? '')
+              : ''
+          }
+          onClose={() => setModalOpen(false)}
+          onSave={(v) => {
+            if (!modalRecordId) return;
+            setCell(modalRecordId, modalKey, v);
+          }}
+        />
       </div>
     </div>
   );

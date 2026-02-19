@@ -24,6 +24,34 @@ export function normalizeLinkedIn(url: string): string {
   return u;
 }
 
+export function normalizeDomain(input: string): string {
+  let s = clean(input).toLowerCase();
+  if (!s) return '';
+  s = s.replace(/^mailto:/, '');
+  // Accept full URLs; strip protocol/path/query/hash
+  s = s.replace(/^https?:\/\//, '');
+  s = s.replace(/^www\./, '');
+  s = s.split(/[/?#]/)[0] ?? s;
+  // remove trailing dots
+  s = s.replace(/\.+$/, '');
+  return s;
+}
+
+export function isValidDomainLike(input: string): boolean {
+  const d = normalizeDomain(input);
+  if (!d) return true; // empty is allowed
+  // very light validation: host labels + TLD; no spaces
+  if (/\s/.test(d)) return false;
+  if (!/[.]/.test(d)) return false;
+  if (!/^[a-z0-9.-]+$/.test(d)) return false;
+  if (d.length > 253) return false;
+  const parts = d.split('.');
+  if (parts.some((p) => p.length === 0 || p.length > 63)) return false;
+  const tld = parts[parts.length - 1];
+  if (!tld || tld.length < 2) return false;
+  return true;
+}
+
 export function guessCompanyFromDomain(domain: string): string {
   const d = clean(domain).replace(/^www\./i, '');
   if (!d) return '';
