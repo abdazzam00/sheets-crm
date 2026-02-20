@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getPool } from '@/lib/db';
+import { fetchTimeout } from '@/lib/fetchTimeout';
 import { ensureJobsSchema, type JobStatus, type JobType } from '@/lib/jobs/jobsRepo';
 
 const QuerySchema = z.object({
@@ -20,7 +21,9 @@ async function throttle() {
 async function runVerifyJob(recordId: string) {
   const baseUrl = process.env.BASE_URL;
   if (!baseUrl) throw new Error('Missing BASE_URL env var (server-only)');
-  const res = await fetch(`${baseUrl}/api/records/ai/verify-exec-search`, {
+  const timeoutMs = Number(process.env.INTERNAL_FETCH_TIMEOUT_MS ?? '60000');
+  const res = await fetchTimeout(`${baseUrl}/api/records/ai/verify-exec-search`, {
+    timeoutMs,
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ id: recordId }),
@@ -48,8 +51,11 @@ async function runEnrichJob(recordId: string) {
   const baseUrl = process.env.BASE_URL;
   if (!baseUrl) throw new Error('Missing BASE_URL env var (server-only)');
 
+  const timeoutMs = Number(process.env.INTERNAL_FETCH_TIMEOUT_MS ?? '60000');
+
   const callJson = async (path: string) => {
-    const res = await fetch(`${baseUrl}${path}`, {
+    const res = await fetchTimeout(`${baseUrl}${path}`, {
+      timeoutMs,
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id: recordId }),
