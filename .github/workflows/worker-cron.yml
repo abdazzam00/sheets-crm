@@ -9,18 +9,28 @@ jobs:
   run-worker:
     runs-on: ubuntu-latest
     steps:
-      - name: Hit worker endpoint
+      - name: Hit worker endpoint (non-fatal)
         env:
           WORKER_URL: ${{ secrets.WORKER_URL }}
           WORKER_TOKEN: ${{ secrets.WORKER_TOKEN }}
         run: |
           if [ -z "$WORKER_URL" ]; then
             echo "Missing WORKER_URL secret" >&2
-            exit 1
+            exit 0
           fi
-          url="$WORKER_URL"
+
           if [ -n "$WORKER_TOKEN" ]; then
-            curl -fsS -H "Authorization: Bearer $WORKER_TOKEN" "$url"
+            code=$(curl -sS -o /tmp/worker.out -w "%{http_code}" -H "Authorization: Bearer $WORKER_TOKEN" "$WORKER_URL" || true)
           else
-            curl -fsS "$url"
+            code=$(curl -sS -o /tmp/worker.out -w "%{http_code}" "$WORKER_URL" || true)
           fi
+
+          echo "HTTP $code"
+          head -c 2000 /tmp/worker.out || true
+
+          if [ "$code" = "200" ]; then
+            exit 0
+          fi
+
+          echo "Worker call did not return 200; not failing workflow to avoid alert spam." >&2
+          exit 0
