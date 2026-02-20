@@ -38,6 +38,7 @@ import { renderTemplate } from '@/lib/template';
 import ExportModal from '@/app/_components/ExportModal';
 import LongTextEditorModal from '@/app/_components/LongTextEditorModal';
 import JobStatusPill from '@/app/_components/JobStatusPill';
+import ResearchCommandBar from '@/app/_components/ResearchCommandBar';
 
 // Mapping types + guessing live in src/lib/importMapping.ts
 
@@ -307,6 +308,15 @@ export default function Home() {
             Postgres-backed CRM table. Import CSVs (append + dedupe/merge) and edit inline (autosaves).
           </p>
         </header>
+
+        <div className="mb-6">
+          <ResearchCommandBar
+            existingDomains={records.map((r) => r.domain).filter(Boolean)}
+            onAdded={async () => {
+              await refresh();
+            }}
+          />
+        </div>
 
         <div className="grid gap-6 md:grid-cols-2">
           <section className="rounded-xl border bg-white p-4">
